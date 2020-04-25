@@ -10,8 +10,8 @@
   const recommandations = query(client, {
     query: queries.GET_RECOMMANDATIONS
   });
-  
-  const user = "@paulostro"
+
+  const user = "@paulostro";
 </script>
 
 <style>
@@ -34,22 +34,38 @@
     grid-area: content;
   }
 
+  .title {
+    visibility: hidden;
+    width: 0;
+    height: 0;
+  }
+
+  @media (min-width: 600px) {
+    .title {
+      visibility: visible;
+      width: inherit;
+      height: inherit;
+    }
+  }
+
   main {
     display: grid;
-    grid-template-columns: 10% auto 10%;
-    grid-template-rows: auto 2rem 1fr auto;
+    grid-template-columns: 10% 1fr 10%;
+    grid-template-rows: auto 2rem 1fr 2rem auto;
     grid-template-areas:
       "header header header"
       ". . ."
       ". content ."
+      ". . ."
       "footer footer footer";
     min-height: 100vh;
+    max-width: 100vw;
   }
 </style>
 
 <main>
   <div class="header boxed">
-    <h1>CS Japan recommandations</h1>
+    <h2 class="title">CS Japan recommandations</h2>
     <h4>Logged in as {user}</h4>
   </div>
 
@@ -69,6 +85,6 @@
   </div>
 
   <div class="footer boxed">
-    <h2>Made with ❤️ by @paulostro</h2>
+    <h2>Made with ❤️</h2>
   </div>
 </main>
