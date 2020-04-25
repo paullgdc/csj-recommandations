@@ -10,6 +10,7 @@ frontend_build: frontend
 	cd frontend && npm run build
 
 dev: export STATIC_DIR = $(PWD)/frontend/public
+dev: export ADRESS = 127.0.0.1:5000
 dev:
 	cd $(PWD)/frontend && npm run dev & cd $(PWD)/backend && cargo run;
 
