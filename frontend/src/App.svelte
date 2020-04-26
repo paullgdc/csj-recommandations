@@ -1,17 +1,33 @@
 <script>
   import Recommandation from "./Recommandation.svelte";
   import ApolloClient from "apollo-boost";
-  import { setClient, query } from "svelte-apollo";
-  import { queries } from "./apollo";
+  import { setClient, query, mutate } from "svelte-apollo";
+  import { queries, mutations } from "./apollo";
 
   const client = new ApolloClient({ uri: process.env.API_URL });
   setClient(client);
 
+  const user = "paul";
+
   const recommandations = query(client, {
-    query: queries.GET_RECOMMANDATIONS
+    query: queries.GET_RECOMMANDATIONS,
+    variables: { user }
   });
 
-  const user = "@paulostro";
+  const handleUpvote = reco => {
+    mutate(client, {
+      mutation: mutations.FLIP_UPVOTE,
+      variables: {
+        user,
+        recoId: reco.id
+      },
+      optimisticResponse: {
+        id: reco.id, 
+        upvoteCount: reco.upvoteCount + (!reco.isUpvotedBy * 2 - 1),
+        isUpvotedBy: !reco.isUpvotedBy,
+      }
+    });
+  };
 </script>
 
 <style>
@@ -75,8 +91,12 @@
       {#await $recommandations}
         <p>Loading...</p>
       {:then res}
-        {#each res.data.recommandations as { id, name, upvoteCount }}
-          <Recommandation {name} {upvoteCount} />
+        {#each res.data.recommandations as reco}
+          <Recommandation
+            name={reco.name}
+            upvoteCount={reco.upvoteCount}
+            upvoted={reco.isUpvotedBy}
+            on:upvote={() => handleUpvote(reco)} />
         {/each}
       {:catch e}
         <p>Error {e}</p>

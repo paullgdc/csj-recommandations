@@ -145,8 +145,16 @@ impl Recommandation {
         &self.name
     }
 
+    fn upvotes(&self) -> &[String] {
+        &self.upvotes
+    }
+
     fn upvote_count(&self) -> i32 {
         self.upvotes.len() as i32
+    }
+
+    fn is_upvoted_by(&self, user: String) -> bool {
+        self.upvotes.iter().find(|&u| u == &user).is_some()
     }
 }
 
@@ -178,7 +186,11 @@ impl Mutation {
         Some(new_todo)
     }
 
-    fn upvote_recommandation(ctx: &Ctx, user: String, id: juniper::ID) -> Option<Recommandation> {
+    fn flip_recommandation_vote(
+        ctx: &Ctx,
+        user: String,
+        id: juniper::ID,
+    ) -> Option<Recommandation> {
         ctx.0
             .get()
             .ok()?
@@ -187,8 +199,13 @@ impl Mutation {
                     Some(reco) => reco,
                     None => return Ok(()),
                 };
-                if let None = reco.upvotes.iter().find(|up| *up == &user) {
-                    reco.upvotes.push(user);
+                match reco.upvotes.iter().enumerate().find(|(_, up)| *up == &user) {
+                    None => {
+                        reco.upvotes.push(user);
+                    }
+                    Some((i, _)) => {
+                        reco.upvotes.remove(i);
+                    }
                 }
                 Ok(())
             })

@@ -1,9 +1,18 @@
 <script>
+  import { createEventDispatcher } from 'svelte';
   export let name;
   export let upvoteCount;
+  export let upvoted;
+
+  const dispatch = createEventDispatcher();
 </script>
 
 <style>
+  :root {
+    --upvoted: rgb(69, 221, 69);
+    --unvoted: rgb(0, 0, 0);
+  }
+
   .infos {
     padding: 1rem 0rem;
   }
@@ -28,14 +37,22 @@
   }
 
   .upvote:hover {
-      border-color: rgb(252, 104, 51);
-      color: rgb(252, 104, 51);
-      transform: scale(1.2);
+    transform: scale(1.1);
   }
+
+  .upvoted {
+    border-color: var(--upvoted);
+    color: var(--upvoted);
+  }
+
+  .upvoted:hover {
+    transform: scale(0.9);
+  }
+  
 </style>
 
 <div class="container">
-  <div class="upvote">+1</div>
+  <div class="upvote {upvoted ? "upvoted" : ""}" on:click="{() => dispatch("upvote")}">+1</div>
   <div class="infos">
     <h3>{name}</h3>
     <h5>upvotes: {upvoteCount}</h5>
