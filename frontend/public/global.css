@@ -70,6 +70,14 @@ select {
   font: inherit;
 }
 
+input,
+select,
+textarea {
+  padding: 0.25rem 0.37rem;
+  border: 1px solid #cccccc;
+  border-radius: 0.25rem;
+}
+
 /* Remove all animations and transitions for people that prefer not to see them */
 @media (prefers-reduced-motion: reduce) {
   * {

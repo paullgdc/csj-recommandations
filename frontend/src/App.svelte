@@ -1,5 +1,8 @@
 <script>
-  import Recommandation from "./Recommandation.svelte";
+  import Recommandation from "./components/Recommandation.svelte";
+  import Modal from "./components/Modal.svelte";
+  import RecommandationInput from "./components/RecommandationInput.svelte";
+
   import ApolloClient from "apollo-boost";
   import { setClient, query, mutate } from "svelte-apollo";
   import { queries, mutations } from "./apollo";
@@ -14,7 +17,7 @@
     variables: { user }
   });
 
-  const handleUpvote = reco => {
+  function handleUpvote(reco) {
     mutate(client, {
       mutation: mutations.FLIP_UPVOTE,
       variables: {
@@ -22,12 +25,14 @@
         recoId: reco.id
       },
       optimisticResponse: {
-        id: reco.id, 
+        id: reco.id,
         upvoteCount: reco.upvoteCount + (!reco.isUpvotedBy * 2 - 1),
-        isUpvotedBy: !reco.isUpvotedBy,
+        isUpvotedBy: !reco.isUpvotedBy
       }
     });
-  };
+  }
+
+  let showCreateReco = true;
 </script>
 
 <style>
@@ -64,6 +69,25 @@
     }
   }
 
+  .reco-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .create-reco-overlay {
+    background-color: white;
+    width: 90%;
+    padding: 2rem;
+    border-radius: 1rem;
+  }
+
+  @media (min-width: 600px) {
+    .create-reco-overlay {
+      width: 60%;
+    }
+  }
+
   main {
     display: grid;
     grid-template-columns: 10% 1fr 10%;
@@ -86,7 +110,12 @@
   </div>
 
   <div class="content">
-    <h2>Recommandations:</h2>
+    <div class="reco-header">
+      <h2>Recommandations:</h2>
+      <button on:click={() => {
+        showCreateReco = true;
+      }}>+ Make a recommandation</button>
+    </div>
     <div>
       {#await $recommandations}
         <p>Loading...</p>
@@ -103,6 +132,18 @@
       {/await}
     </div>
   </div>
+
+  <Modal isVisible={showCreateReco}>
+    <div class="create-reco-overlay">
+      <RecommandationInput
+        on:cancel={() => {
+          showCreateReco = false;
+        }}
+        on:confirm={reco => {
+          showCreateReco = false;
+        }} />
+    </div>
+  </Modal>
 
   <div class="footer boxed">
     <h2>Made with ❤️</h2>
