@@ -6,6 +6,8 @@ export const queries = {
     recommandations {
       id
       name
+      link
+      media
       upvoteCount
       isUpvotedBy(user: $user)
     }
@@ -23,4 +25,7 @@ export const mutations = {
     }
   }
   `,
+  // CREATE_NEW_RECO: gql`
+  // mutation ()
+  // `,
 };

@@ -41,7 +41,7 @@ impl Database {
                 id BLOB PRIMARY KEY NOT NULL,
                 data BLOB
             );
-        ",
+            ",
             rusqlite::params![],
         )?;
         self.conn.pragma_update(None, "journal_mode", &"WAL")?;
@@ -128,10 +128,19 @@ struct Ctx(DbPool);
 
 impl juniper::Context for Ctx {}
 
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, juniper::GraphQLEnum)]
+enum Media {
+    Manga,
+    Anime,
+    Other,
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct Recommandation {
     id: Uuid,
     name: String,
+    media: Media,
+    link: Option<String>,
     upvotes: Vec<String>,
 }
 
@@ -156,6 +165,20 @@ impl Recommandation {
     fn is_upvoted_by(&self, user: String) -> bool {
         self.upvotes.iter().find(|&u| u == &user).is_some()
     }
+
+    fn media(&self) -> Media {
+        self.media
+    }
+    fn link(&self) -> &Option<String> {
+        &self.link
+    }
+}
+
+#[derive(juniper::GraphQLInputObject)]
+struct NewRecommandation {
+    name: String,
+    link: Option<String>,
+    media: Media,
 }
 
 struct Query;
@@ -175,11 +198,13 @@ struct Mutation;
 
 #[juniper::graphql_object(Context = Ctx)]
 impl Mutation {
-    fn create_recommandation(ctx: &Ctx, name: String) -> Option<Recommandation> {
+    fn create_recommandation(ctx: &Ctx, new: NewRecommandation) -> Option<Recommandation> {
         let db = ctx.0.get().ok()?;
         let new_todo = Recommandation {
             id: db.new_id().ok()?,
-            name,
+            name: new.name,
+            link: new.link,
+            media: new.media,
             upvotes: Vec::new(),
         };
         db.put_recommandation(&new_todo).ok()?;
@@ -235,7 +260,7 @@ async fn main() -> Result<()> {
     let state = warp::any().map(move || ctx.clone());
     let graphql_filter = juniper_warp::make_graphql_filter_sync(schema(), state.boxed());
 
-    println!("starting the server");
+    println!("starting the server at http://{}", config.address);
     warp::serve(
         warp::path("graphql").and(graphql_filter).or(warp::get()
             .and(warp::path("graphiql").and(juniper_warp::graphiql_filter("/graphql")))
