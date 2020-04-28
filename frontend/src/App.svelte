@@ -32,7 +32,33 @@
     });
   }
 
-  let showCreateReco = true;
+  function handleConfirmReco(newReco) {
+    mutate(client, {
+      mutation: mutations.CREATE_NEW_RECO,
+      variables: {
+        new: newReco
+      },
+      update: (cache, { data: { createRecommandation } }) => {
+        const { recommandations } = cache.readQuery({
+          query: queries.GET_RECOMMANDATIONS,
+          variables: { user }
+        });
+        console.log(recommandations);
+        cache.writeQuery({
+          query: queries.GET_RECOMMANDATIONS,
+          data: {
+            recommandations: [
+              ...recommandations,
+              { upvoteCount: 0, isUpvotedBy: false, ...createRecommandation }
+            ]
+          },
+          variables: { user }
+        });
+      }
+    });
+  }
+
+  let showCreateReco = false;
 </script>
 
 <style>
@@ -112,9 +138,12 @@
   <div class="content">
     <div class="reco-header">
       <h2>Recommandations:</h2>
-      <button on:click={() => {
-        showCreateReco = true;
-      }}>+ Make a recommandation</button>
+      <button
+        on:click={() => {
+          showCreateReco = true;
+        }}>
+        + Make a recommandation
+      </button>
     </div>
     <div>
       {#await $recommandations}
@@ -139,8 +168,10 @@
         on:cancel={() => {
           showCreateReco = false;
         }}
-        on:confirm={reco => {
+        on:confirm={({ detail: reco }) => {
+          console.log(reco);
           showCreateReco = false;
+          handleConfirmReco(reco);
         }} />
     </div>
   </Modal>

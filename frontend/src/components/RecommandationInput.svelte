@@ -4,7 +4,7 @@
 
   let reco = {
     name: "",
-    type: "",
+    media: "MANGA",
     link: ""
   };
 
@@ -71,8 +71,8 @@
     <label>Nom:</label>
     <input bind:value={reco.name} class="field" />
 
-    <label>Type:</label>
-    <select bind:value={reco.type} class="field">
+    <label>Media:</label>
+    <select bind:value={reco.media} class="field">
       <option value="MANGA">manga</option>
       <option value="ANIME">anime</option>
       <option value="OTHER">autre</option>

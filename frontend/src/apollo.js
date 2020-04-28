@@ -25,7 +25,14 @@ export const mutations = {
     }
   }
   `,
-  // CREATE_NEW_RECO: gql`
-  // mutation ()
-  // `,
+  CREATE_NEW_RECO: gql`
+  mutation ($new: NewRecommandation!) {
+    createRecommandation(new: $new) {
+      id
+      name
+      link
+      media
+    }
+  }
+  `,
 };
