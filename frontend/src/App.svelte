@@ -43,7 +43,6 @@
           query: queries.GET_RECOMMANDATIONS,
           variables: { user }
         });
-        console.log(recommandations);
         cache.writeQuery({
           query: queries.GET_RECOMMANDATIONS,
           data: {
