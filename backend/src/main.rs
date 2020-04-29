@@ -1,6 +1,6 @@
-use anyhow::Result;
-use juniper;
-use rusqlite::OptionalExtension;
+use anyhow::{Result, Context};
+use juniper::FieldResult;
+use num_traits::cast::{FromPrimitive, ToPrimitive};
 use tokio;
 use uuid::Uuid;
 use warp::Filter;
@@ -28,6 +28,15 @@ fn config() -> Result<Config> {
     })
 }
 
+fn row_to_rec(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recommandation> {
+    Ok(Recommandation {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        media: row.get("media")?,
+        link: row.get("link")?,
+    })
+}
+
 #[derive(Debug)]
 struct Database {
     conn: rusqlite::Connection,
@@ -36,15 +45,95 @@ struct Database {
 impl Database {
     fn init(&self) -> rusqlite::Result<()> {
         self.conn.execute(
-            "
-            CREATE TABLE IF NOT EXISTS recommandations(
+            "CREATE TABLE IF NOT EXISTS users(
+                id STRING PRIMARY KEY NOT NULL,
+                username TEXT
+            );",
+            rusqlite::params![],
+        )?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS recommandations(
                 id BLOB PRIMARY KEY NOT NULL,
-                data BLOB
-            );
-            ",
+                name TEXT NOT NULL,
+                media INTEGER NOT NULL,
+                link TEXT
+            );",
+            rusqlite::params![],
+        )?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS upvotes(
+                user_id STRING,
+                reco_id BLOB,
+                vote INTEGER NOT NULL,
+                PRIMARY KEY(reco_id, user_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (reco_id) REFERENCES recommandations(id) ON DELETE CASCADE
+            );",
             rusqlite::params![],
         )?;
         self.conn.pragma_update(None, "journal_mode", &"WAL")?;
+        Ok(())
+    }
+
+    fn all_recommandations(&self) -> Result<Vec<Recommandation>> {
+        self.conn
+            .prepare("SELECT id, name, media, link FROM recommandations")?
+            .query_map(rusqlite::NO_PARAMS, row_to_rec)?
+            .map(|reco| Ok(reco?))
+            .collect()
+    }
+
+    fn create_recommandation(&self, new_reco: &Recommandation) -> Result<()> {
+        self.conn
+            .prepare(
+                "INSERT INTO recommandations(id, name, media, link)
+                VALUES(?1, ?2, ?3, ?4)",
+            )?
+            .execute(rusqlite::params![
+                &new_reco.id,
+                &new_reco.name,
+                &new_reco.media,
+                &new_reco.link
+            ])?;
+        Ok(())
+    }
+
+    fn upvotes_by_recommandation_id(&self, reco_id: Uuid) -> Result<Vec<String>> {
+        self.conn
+            .prepare("SELECT user_id FROM upvotes WHERE reco_id=?1 AND vote=1")?
+            .query_map(rusqlite::params![&reco_id], |row| row.get("user_id"))?
+            .map(|data| Ok(data?))
+            .collect()
+    }
+
+    fn upvote_by_id(&self, reco_id: Uuid, user_id: &str) -> Result<i32> {
+        Ok(self
+            .conn
+            .prepare("SELECT IFNULL((SELECT vote FROM upvotes WHERE user_id=?1 AND reco_id=?2), 0) vote")?
+            .query_row(rusqlite::params![&user_id, &reco_id], |row| row.get("vote"))?)
+    }
+
+    fn recommandation_by_id(&self, reco_id: Uuid) -> Result<Recommandation> {
+        Ok(self
+            .conn
+            .prepare("SELECT id, name, media, link FROM recommandations WHERE id=?1")?
+            .query_row(rusqlite::params![&reco_id], row_to_rec)?)
+    }
+
+    fn flip_upvote(&self, reco_id: Uuid, user_id: &str) -> Result<()> {
+        self.conn
+            .prepare(
+                "INSERT OR REPLACE INTO upvotes(user_id, reco_id, vote)
+                VALUES (
+                    ?1, ?2,
+                    (IFNULL(
+                        (SELECT vote FROM upvotes WHERE user_id=?1 AND reco_id=?2),
+                        0
+                    )  + 1) % 2
+                );
+            ",
+            )?
+            .execute(rusqlite::params![&user_id, &reco_id])?;
         Ok(())
     }
 
@@ -53,49 +142,8 @@ impl Database {
         Ok(Self { conn })
     }
 
-    fn new_id(&self) -> Result<uuid::Uuid> {
-        Ok(uuid::Uuid::new_v4())
-    }
-
-    fn put_recommandation(&self, rec: &Recommandation) -> Result<()> {
-        self.conn
-            .prepare("INSERT OR REPLACE INTO recommandations(id, data) VALUES (?1, ?2)")
-            .unwrap()
-            .execute(rusqlite::params![&rec.id, &serde_json::to_vec(rec)?])?;
-        Ok(())
-    }
-
-    fn list_recommandations<'a>(&'a self) -> Result<Vec<Recommandation>> {
-        self.conn
-            .prepare("SELECT data FROM recommandations")?
-            .query_map(rusqlite::NO_PARAMS, |row| row.get::<usize, Vec<u8>>(0))?
-            .map(|data| Ok(serde_json::from_slice(&data?)?))
-            .collect()
-    }
-
-    fn modify_recommandation(
-        &mut self,
-        id: Uuid,
-        op: impl FnOnce(&mut Option<Recommandation>) -> Result<()>,
-    ) -> Result<Option<Recommandation>> {
-        let tx = self.conn.transaction()?;
-        let mut rec = tx
-            .prepare("SELECT data FROM recommandations WHERE id=?1")?
-            .query_row(rusqlite::params![&id], |row| row.get::<usize, Vec<u8>>(0))
-            .optional()?
-            .map(|d| serde_json::from_slice::<Recommandation>(&d))
-            .map_or(Ok(None), |r| r.map(Some))?;
-        op(&mut rec)?;
-        if let Some(ref rec) = &rec {
-            if rec.id != id {
-                panic!("Trying to modify object id durin mutation");
-            }
-            tx.prepare("INSERT OR REPLACE INTO recommandations(id, data) VALUES (?1, ?2)")
-                .unwrap()
-                .execute(rusqlite::params![&rec.id, &serde_json::to_vec(rec)?])?;
-        }
-        tx.commit()?;
-        Ok(rec)
+    fn new_id(&self) -> Uuid {
+        Uuid::new_v4()
     }
 }
 
@@ -128,23 +176,24 @@ struct Ctx(DbPool);
 
 impl juniper::Context for Ctx {}
 
-#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, juniper::GraphQLEnum)]
+#[derive(
+    Clone, Copy, Debug, juniper::GraphQLEnum, num_derive::FromPrimitive, num_derive::ToPrimitive,
+)]
 enum Media {
-    Manga,
-    Anime,
-    Other,
+    Manga = 1,
+    Anime = 2,
+    Other = 3,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug)]
 struct Recommandation {
     id: Uuid,
     name: String,
-    media: Media,
+    media: u8,
     link: Option<String>,
-    upvotes: Vec<String>,
 }
 
-#[juniper::graphql_object]
+#[juniper::graphql_object(Context = Ctx)]
 impl Recommandation {
     fn id(&self) -> juniper::ID {
         juniper::ID::new(self.id.to_string())
@@ -154,20 +203,21 @@ impl Recommandation {
         &self.name
     }
 
-    fn upvotes(&self) -> &[String] {
-        &self.upvotes
+    fn upvotes(&self, ctx: &Ctx) -> FieldResult<Vec<String>> {
+        Ok(ctx.0.get()?.upvotes_by_recommandation_id(self.id)?)
     }
 
-    fn upvote_count(&self) -> i32 {
-        self.upvotes.len() as i32
+    fn upvote_count(&self, ctx: &Ctx) -> FieldResult<i32> {
+        Ok(ctx.0.get()?.upvotes_by_recommandation_id(self.id)?.len() as i32)
     }
 
-    fn is_upvoted_by(&self, user: String) -> bool {
-        self.upvotes.iter().find(|&u| u == &user).is_some()
+    fn is_upvoted_by(&self, ctx: &Ctx, user_id: juniper::ID) -> FieldResult<bool> {
+        Ok(ctx.0.get()?.upvote_by_id(self.id, &user_id)? == 1)
     }
 
-    fn media(&self) -> Media {
-        self.media
+    fn media(&self) -> FieldResult<Media> {
+        Media::from_u8(self.media)
+            .ok_or(anyhow::anyhow!("Cannot get media variant from value").into())
     }
     fn link(&self) -> &Option<String> {
         &self.link
@@ -189,8 +239,8 @@ impl Query {
         "1.0"
     }
 
-    fn recommandations(ctx: &Ctx) -> Option<Vec<Recommandation>> {
-        ctx.0.get().ok()?.list_recommandations().ok()
+    fn recommandations(ctx: &Ctx) -> FieldResult<Vec<Recommandation>> {
+        Ok(ctx.0.get()?.all_recommandations()?)
     }
 }
 
@@ -198,44 +248,27 @@ struct Mutation;
 
 #[juniper::graphql_object(Context = Ctx)]
 impl Mutation {
-    fn create_recommandation(ctx: &Ctx, new: NewRecommandation) -> Option<Recommandation> {
-        let db = ctx.0.get().ok()?;
+    fn create_recommandation(ctx: &Ctx, new: NewRecommandation) -> FieldResult<Recommandation> {
+        let db = ctx.0.get()?;
         let new_todo = Recommandation {
-            id: db.new_id().ok()?,
+            id: db.new_id(),
             name: new.name,
             link: new.link,
-            media: new.media,
-            upvotes: Vec::new(),
+            media: new.media.to_u8().unwrap(),
         };
-        db.put_recommandation(&new_todo).ok()?;
-        Some(new_todo)
+        db.create_recommandation(&new_todo)?;
+        Ok(new_todo)
     }
 
     fn flip_recommandation_vote(
         ctx: &Ctx,
-        user: String,
-        id: juniper::ID,
-    ) -> Option<Recommandation> {
-        ctx.0
-            .get()
-            .ok()?
-            .modify_recommandation(id.parse().ok()?, move |reco| {
-                let reco = match reco.as_mut() {
-                    Some(reco) => reco,
-                    None => return Ok(()),
-                };
-                match reco.upvotes.iter().enumerate().find(|(_, up)| *up == &user) {
-                    None => {
-                        reco.upvotes.push(user);
-                    }
-                    Some((i, _)) => {
-                        reco.upvotes.remove(i);
-                    }
-                }
-                Ok(())
-            })
-            .ok()
-            .flatten()
+        user_id: juniper::ID,
+        reco_id: juniper::ID,
+    ) -> FieldResult<Recommandation> {
+        let db = ctx.0.get()?;
+        let reco_id: Uuid = reco_id.parse()?;
+        db.flip_upvote(reco_id, &user_id)?;
+        Ok(db.recommandation_by_id(reco_id)?)
     }
 }
 
@@ -247,13 +280,13 @@ fn schema() -> Schema {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = config()?;
+    let config = config().context("Wasn't able to read the config")?;
 
     let manager = DatabaseManager {
         path: config.database,
     };
     let pool = DbPool::new(manager)?;
-    pool.get()?.init()?;
+    pool.get()?.init().context("Wasn't able to initialize the database")?;
 
     let ctx = Ctx(pool);
 
