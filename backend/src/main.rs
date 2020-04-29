@@ -68,8 +68,7 @@ impl Database {
                 PRIMARY KEY(reco_id, user_id),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (reco_id) REFERENCES recommandations(id) ON DELETE CASCADE
-            )
-            ",
+            );",
             rusqlite::params![],
         )?;
         self.conn.pragma_update(None, "journal_mode", &"WAL")?;
