@@ -21,3 +21,5 @@ uuid = { version = "0.8", features = ["v4", "serde"] }
 warp = { version = "0.2", default-features = false }
 num-traits = "0.2"
 num-derive = "0.3"
+dataloader = { version = "0.12", features = ["tokio"] }
+async-trait = "0.1"

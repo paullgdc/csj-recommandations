@@ -1,10 +1,14 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use dataloader::cached::Loader;
+use dataloader::BatchFn;
 use juniper::FieldResult;
 use num_traits::cast::{FromPrimitive, ToPrimitive};
 use tokio;
 use uuid::Uuid;
 use warp::Filter;
 
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 
@@ -35,6 +39,40 @@ fn row_to_rec(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recommandation> {
         media: row.get("media")?,
         link: row.get("link")?,
     })
+}
+
+fn result_to_batch<K, U, V, S, T>(
+    result: std::result::Result<K, V>,
+    map: &mut HashMap<S, Result<U, T>>,
+    keys: &[S],
+) -> Option<K>
+where
+    S: std::cmp::Eq + std::cmp::Ord + std::hash::Hash + Clone,
+    T: From<V> + Clone,
+{
+    let error = match result {
+        Ok(val) => return Some(val),
+        Err(e) => T::from(e),
+    };
+    for key in keys {
+        map.insert(key.clone(), Err(error.clone()));
+    }
+    None
+}
+
+pub struct UpvotesByRecoLoader(DbPool);
+
+#[async_trait]
+impl BatchFn<Uuid, FieldResult<Vec<String>>> for UpvotesByRecoLoader {
+    async fn load(&self, keys: &[Uuid]) -> HashMap<Uuid, Result<Vec<String>>> {
+        let mut map = HashMap::new();
+        match result_to_batch(self.0.get(), &mut map, keys) {
+            Some(db) => db,
+            None => return map,
+        };
+        // self.0.get().conn.prepare("");
+        todo!()
+    }
 }
 
 #[derive(Debug)]
@@ -109,7 +147,9 @@ impl Database {
     fn upvote_by_id(&self, reco_id: Uuid, user_id: &str) -> Result<i32> {
         Ok(self
             .conn
-            .prepare("SELECT IFNULL((SELECT vote FROM upvotes WHERE user_id=?1 AND reco_id=?2), 0) vote")?
+            .prepare(
+                "SELECT IFNULL((SELECT vote FROM upvotes WHERE user_id=?1 AND reco_id=?2), 0) vote",
+            )?
             .query_row(rusqlite::params![&user_id, &reco_id], |row| row.get("vote"))?)
     }
 
@@ -286,7 +326,9 @@ async fn main() -> Result<()> {
         path: config.database,
     };
     let pool = DbPool::new(manager)?;
-    pool.get()?.init().context("Wasn't able to initialize the database")?;
+    pool.get()?
+        .init()
+        .context("Wasn't able to initialize the database")?;
 
     let ctx = Ctx(pool);
 
