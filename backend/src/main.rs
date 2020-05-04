@@ -12,6 +12,69 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 
+use error::*;
+
+mod error {
+    use juniper::graphql_value;
+    use std::fmt;
+
+    macro_rules! from_error {
+        ($variant:ident, $error:ty) => {
+            impl From<$error> for ApiError {
+                fn from(error: $error) -> Self {
+                    eprintln!("Error: {}", error);
+                    ApiError::$variant
+                }
+            }
+        };
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum ApiError {
+        Database,
+    }
+
+    impl fmt::Display for ApiError {
+        fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+            use ApiError::*;
+            match self {
+                Database => write!(fmt, "Internal database error"),
+            }
+        }
+    }
+
+    from_error!(Database, r2d2::Error);
+    from_error!(Database, rusqlite::Error);
+
+    impl juniper::IntoFieldError for ApiError {
+        fn into_field_error(self) -> juniper::FieldError {
+            use ApiError::*;
+            match self {
+                Database => juniper::FieldError::new(
+                    self,
+                    graphql_value!({
+                        "type": "DATABASE"
+                    }),
+                ),
+            }
+        }
+    }
+
+    pub trait IntoApiResult<T> {
+        fn into_api(self) -> ApiResult<T>;
+    }
+
+    pub type ApiResult<T> = std::result::Result<T, ApiError>;
+    impl<T, E> IntoApiResult<T> for std::result::Result<T, E>
+    where
+        E: Into<ApiError>,
+    {
+        fn into_api(self) -> ApiResult<T> {
+            self.map_err(|e| e.into())
+        }
+    }
+}
+
 struct Config {
     static_dir: PathBuf,
     database: PathBuf,
@@ -60,20 +123,58 @@ where
     None
 }
 
-pub struct UpvotesByRecoLoader(DbPool);
+fn query_in(base: &'static str, nb_parameters: usize) -> String {
+    let mut query = String::with_capacity(base.len() + 2 * nb_parameters);
+    query.push_str(base);
+    for _ in 0..(nb_parameters - 1) {
+        query.push_str(&"?,");
+    }
+    query.push_str(&"?);");
+    query
+}
+
+pub struct UpvotesByRecoBatcb(DbPool);
 
 #[async_trait]
-impl BatchFn<Uuid, FieldResult<Vec<String>>> for UpvotesByRecoLoader {
-    async fn load(&self, keys: &[Uuid]) -> HashMap<Uuid, Result<Vec<String>>> {
+impl BatchFn<Uuid, ApiResult<Vec<String>>> for UpvotesByRecoBatcb {
+    async fn load(&self, keys: &[Uuid]) -> HashMap<Uuid, ApiResult<Vec<String>>> {
         let mut map = HashMap::new();
-        match result_to_batch(self.0.get(), &mut map, keys) {
+        let db = match result_to_batch(self.0.get().into_api(), &mut map, keys) {
             Some(db) => db,
             None => return map,
         };
-        // self.0.get().conn.prepare("");
-        todo!()
+
+        let query = query_in(
+            "SELECT user_id, reco_id FROM upvotes WHERE vote=1 AND reco_id IN (",
+            keys.len(),
+        );
+        let op = (|| {
+            db.conn
+                .prepare(&query)?
+                .query_map(
+                    &keys
+                        .into_iter()
+                        .map(|k| -> &dyn rusqlite::ToSql { k })
+                        .collect::<Vec<_>>(),
+                    |r| {
+                        let u_id: String = r.get("user_id")?;
+                        let r_id: Uuid = r.get("reco_id")?;
+                        map.entry(r_id)
+                            .or_insert(Ok(Vec::new()))
+                            .as_mut()
+                            .map(|v| v.push(u_id))
+                            .unwrap();
+                        Ok(())
+                    },
+                )?
+                .collect::<rusqlite::Result<()>>()
+        })();
+        result_to_batch(op.into_api(), &mut map, keys);
+        map
     }
 }
+
+type UpvotesLoader = Loader<Uuid, ApiResult<Vec<String>>, UpvotesByRecoBatcb>;
 
 #[derive(Debug)]
 struct Database {
@@ -211,8 +312,16 @@ impl r2d2::ManageConnection for DatabaseManager {
 
 type DbPool = r2d2::Pool<DatabaseManager>;
 
-#[derive(Clone, Debug)]
-struct Ctx(DbPool);
+struct Ctx(DbPool, UpvotesLoader);
+
+impl Ctx {
+    fn from_db(db: &DbPool) -> Self {
+        Self(
+            db.clone(),
+            UpvotesLoader::new(UpvotesByRecoBatcb(db.clone())),
+        )
+    }
+}
 
 impl juniper::Context for Ctx {}
 
@@ -235,31 +344,31 @@ struct Recommandation {
 
 #[juniper::graphql_object(Context = Ctx)]
 impl Recommandation {
-    fn id(&self) -> juniper::ID {
+    async fn id(&self) -> juniper::ID {
         juniper::ID::new(self.id.to_string())
     }
 
-    fn name(&self) -> &str {
+    async fn name(&self) -> &str {
         &self.name
     }
 
-    fn upvotes(&self, ctx: &Ctx) -> FieldResult<Vec<String>> {
-        Ok(ctx.0.get()?.upvotes_by_recommandation_id(self.id)?)
+    async fn upvotes(&self, ctx: &Ctx) -> FieldResult<Vec<String>> {
+        Ok(ctx.1.load(self.id).await?)
     }
 
-    fn upvote_count(&self, ctx: &Ctx) -> FieldResult<i32> {
+    async fn upvote_count(&self, ctx: &Ctx) -> FieldResult<i32> {
         Ok(ctx.0.get()?.upvotes_by_recommandation_id(self.id)?.len() as i32)
     }
 
-    fn is_upvoted_by(&self, ctx: &Ctx, user_id: juniper::ID) -> FieldResult<bool> {
+    async fn is_upvoted_by(&self, ctx: &Ctx, user_id: juniper::ID) -> FieldResult<bool> {
         Ok(ctx.0.get()?.upvote_by_id(self.id, &user_id)? == 1)
     }
 
-    fn media(&self) -> FieldResult<Media> {
+    async fn media(&self) -> FieldResult<Media> {
         Media::from_u8(self.media)
             .ok_or(anyhow::anyhow!("Cannot get media variant from value").into())
     }
-    fn link(&self) -> &Option<String> {
+    async fn link(&self) -> &Option<String> {
         &self.link
     }
 }
@@ -288,7 +397,7 @@ struct Mutation;
 
 #[juniper::graphql_object(Context = Ctx)]
 impl Mutation {
-    fn create_recommandation(ctx: &Ctx, new: NewRecommandation) -> FieldResult<Recommandation> {
+    async fn create_recommandation(ctx: &Ctx, new: NewRecommandation) -> FieldResult<Recommandation> {
         let db = ctx.0.get()?;
         let new_todo = Recommandation {
             id: db.new_id(),
@@ -300,15 +409,17 @@ impl Mutation {
         Ok(new_todo)
     }
 
-    fn flip_recommandation_vote(
+    async fn flip_recommandation_vote(
         ctx: &Ctx,
         user_id: juniper::ID,
         reco_id: juniper::ID,
     ) -> FieldResult<Recommandation> {
+        println!("flipped reco");
         let db = ctx.0.get()?;
         let reco_id: Uuid = reco_id.parse()?;
         db.flip_upvote(reco_id, &user_id)?;
-        Ok(db.recommandation_by_id(reco_id)?)
+        println!("flipped reco");
+        Ok(dbg!(db.recommandation_by_id(reco_id)?))
     }
 }
 
@@ -330,10 +441,9 @@ async fn main() -> Result<()> {
         .init()
         .context("Wasn't able to initialize the database")?;
 
-    let ctx = Ctx(pool);
 
-    let state = warp::any().map(move || ctx.clone());
-    let graphql_filter = juniper_warp::make_graphql_filter_sync(schema(), state.boxed());
+    let state = warp::any().map(move || Ctx::from_db(&pool));
+    let graphql_filter = juniper_warp::make_graphql_filter(schema(), state.boxed());
 
     println!("starting the server at http://{}", config.address);
     warp::serve(

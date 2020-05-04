@@ -234,7 +234,6 @@ dependencies = [
  "num-derive",
  "num-traits",
  "r2d2",
- "r2d2_sqlite",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1085,16 +1084,6 @@ dependencies = [
  "log 0.4.8",
  "parking_lot",
  "scheduled-thread-pool",
-]
-
-[[package]]
-name = "r2d2_sqlite"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e15ff794e7c8bb8ae20ccac5bac6a93a4a3af708dd801d4094f80da41196f33"
-dependencies = [
- "r2d2",
- "rusqlite",
 ]
 
 [[package]]
