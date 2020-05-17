@@ -2,60 +2,17 @@
   import Recommandation from "./components/Recommandation.svelte";
   import Modal from "./components/Modal.svelte";
   import RecommandationInput from "./components/RecommandationInput.svelte";
+  import { getRecommandations, handleConfirmReco, handleUpvote, deleteReco } from "./api";
 
   import ApolloClient from "apollo-boost";
-  import { setClient, query, mutate } from "svelte-apollo";
-  import { queries, mutations } from "./apollo";
+  import { setClient } from "svelte-apollo";
 
   const client = new ApolloClient({ uri: process.env.API_URL });
   setClient(client);
 
   const user = "paul";
 
-  const recommandations = query(client, {
-    query: queries.GET_RECOMMANDATIONS,
-    variables: { userId: user }
-  });
-
-  function handleUpvote(reco) {
-    mutate(client, {
-      mutation: mutations.FLIP_UPVOTE,
-      variables: {
-        userId: user,
-        recoId: reco.id
-      },
-      optimisticResponse: {
-        id: reco.id,
-        upvoteCount: reco.upvoteCount + (!reco.isUpvotedBy * 2 - 1),
-        isUpvotedBy: !reco.isUpvotedBy
-      }
-    });
-  }
-
-  function handleConfirmReco(newReco) {
-    mutate(client, {
-      mutation: mutations.CREATE_NEW_RECO,
-      variables: {
-        new: newReco
-      },
-      update: (cache, { data: { createRecommandation } }) => {
-        const { recommandations } = cache.readQuery({
-          query: queries.GET_RECOMMANDATIONS,
-          variables: { userId: user }
-        });
-        cache.writeQuery({
-          query: queries.GET_RECOMMANDATIONS,
-          data: {
-            recommandations: [
-              ...recommandations,
-              { upvoteCount: 0, isUpvotedBy: false, ...createRecommandation }
-            ]
-          },
-          variables: { userId: user }
-        });
-      }
-    });
-  }
+  const recommandations = getRecommandations(client, user);
 
   let showCreateReco = false;
 </script>
@@ -153,7 +110,9 @@
             name={reco.name}
             upvoteCount={reco.upvoteCount}
             upvoted={reco.isUpvotedBy}
-            on:upvote={() => handleUpvote(reco)} />
+            isDeletable={user === reco.createdBy}
+            on:upvote={() => handleUpvote(client, user, reco)}
+            on:delete={() => deleteReco(client, user, reco.id)} />
         {/each}
       {:catch e}
         <p>Error {e}</p>
@@ -168,9 +127,8 @@
           showCreateReco = false;
         }}
         on:confirm={({ detail: reco }) => {
-          console.log(reco);
           showCreateReco = false;
-          handleConfirmReco(reco);
+          handleConfirmReco(client, user, reco);
         }} />
     </div>
   </Modal>

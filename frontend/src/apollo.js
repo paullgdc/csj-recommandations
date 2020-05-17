@@ -1,4 +1,4 @@
-import { gql } from 'apollo-boost';
+import { gql } from "apollo-boost";
 
 export const queries = {
   GET_RECOMMANDATIONS: gql`
@@ -9,6 +9,7 @@ export const queries = {
       link
       media
       upvoteCount
+      createdBy
       isUpvotedBy(userId: $userId)
     }
   }
@@ -32,6 +33,13 @@ export const mutations = {
       name
       link
       media
+    }
+  }
+  `,
+  DELETE_RECO: gql`
+  mutation($recoId: ID!) {
+    deleteRecommandation(recoId: $recoId) {
+      id
     }
   }
   `,

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use error::*;
 
 mod error {
-    use juniper::{graphql_value, IntoFieldError, FieldError};
+    use juniper::{graphql_value, FieldError, IntoFieldError};
     use std::fmt;
 
     macro_rules! from_error {
@@ -28,7 +28,8 @@ mod error {
     pub enum ApiError {
         Database,
         UnrecognizedMediaValue,
-        IdNotFound,
+        InvalidId,
+        UnauthorizedOperation,
     }
 
     impl fmt::Display for ApiError {
@@ -40,7 +41,10 @@ mod error {
                     fmt,
                     "The media associated with this object is not recognized"
                 ),
-                IdNotFound => write!(fmt, "The id doesn't exist in database"),
+                InvalidId => write!(fmt, "The id is invalid"),
+                UnauthorizedOperation => {
+                    write!(fmt, "You don't have the permissions to perform this action")
+                }
             }
         }
     }
@@ -64,10 +68,16 @@ mod error {
                         "type": "UNRECOGNIZED_MEDIA_VALUE"
                     }),
                 ),
-                IdNotFound => FieldError::new(
+                InvalidId => FieldError::new(
                     self,
                     graphql_value!({
-                        "type": "ID_NOT_FOUND"
+                        "type": "INVALID_ID"
+                    }),
+                ),
+                UnauthorizedOperation => FieldError::new(
+                    self,
+                    graphql_value!({
+                        "type": "UNAUTHORIZED_OPERATION"
                     }),
                 ),
             }
@@ -114,6 +124,7 @@ fn row_to_rec(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recommandation> {
     Ok(Recommandation {
         id: row.get("id")?,
         name: row.get("name")?,
+        created_by: row.get("created_by")?,
         media: row.get("media")?,
         link: row.get("link")?,
     })
@@ -138,6 +149,7 @@ impl Database {
                 id BLOB PRIMARY KEY NOT NULL,
                 name TEXT NOT NULL,
                 media INTEGER NOT NULL,
+                created_by TEXT NOT NULL,
                 link TEXT
             );",
             rusqlite::params![],
@@ -159,7 +171,7 @@ impl Database {
 
     fn all_recommandations(&self) -> rusqlite::Result<Vec<Recommandation>> {
         self.conn
-            .prepare("SELECT id, name, media, link FROM recommandations")?
+            .prepare("SELECT id, name, media, link, created_by FROM recommandations")?
             .query_map(rusqlite::NO_PARAMS, row_to_rec)?
             .map(|reco| Ok(reco?))
             .collect()
@@ -168,15 +180,23 @@ impl Database {
     fn create_recommandation(&self, new_reco: &Recommandation) -> rusqlite::Result<()> {
         self.conn
             .prepare(
-                "INSERT INTO recommandations(id, name, media, link)
-                VALUES(?1, ?2, ?3, ?4)",
+                "INSERT INTO recommandations(id, name, media, link, created_by)
+                VALUES(?1, ?2, ?3, ?4, ?5)",
             )?
             .execute(rusqlite::params![
                 &new_reco.id,
                 &new_reco.name,
                 &new_reco.media,
-                &new_reco.link
+                &new_reco.link,
+                &new_reco.created_by,
             ])?;
+        Ok(())
+    }
+
+    fn delete_recommandation(&self, reco_id: Uuid) -> rusqlite::Result<()> {
+        self.conn
+            .prepare("DELETE FROM recommandations WHERE id=?1")?
+            .execute(rusqlite::params![&reco_id])?;
         Ok(())
     }
 
@@ -200,7 +220,7 @@ impl Database {
     fn recommandation_by_id(&self, reco_id: Uuid) -> rusqlite::Result<Recommandation> {
         Ok(self
             .conn
-            .prepare("SELECT id, name, media, link FROM recommandations WHERE id=?1")?
+            .prepare("SELECT id, name, media, link, created_by FROM recommandations WHERE id=?1")?
             .query_row(rusqlite::params![&reco_id], row_to_rec)?)
     }
 
@@ -274,6 +294,7 @@ struct Recommandation {
     id: Uuid,
     name: String,
     media: u8,
+    created_by: String,
     link: Option<String>,
 }
 
@@ -304,6 +325,9 @@ impl Recommandation {
     }
     fn link(&self) -> &Option<String> {
         &self.link
+    }
+    fn created_by(&self) -> &str {
+        &self.created_by
     }
 }
 
@@ -337,10 +361,22 @@ impl Mutation {
             id: db.new_id(),
             name: new.name,
             link: new.link,
+            created_by: "paul".to_string(), // TODO: use user id passed by authentificationx
             media: new.media.to_u8().unwrap(),
         };
         db.create_recommandation(&new_todo)?;
         Ok(new_todo)
+    }
+
+    fn delete_recommandation(ctx: &Ctx, reco_id: juniper::ID) -> ApiResult<Recommandation> {
+        let db = ctx.0.get()?;
+        let id = reco_id.parse().map_err(|_| ApiError::InvalidId)?;
+        let reco = db.recommandation_by_id(id)?;
+        if reco.created_by != "paul" {
+            return Err(ApiError::UnauthorizedOperation);
+        }
+        db.delete_recommandation(id)?;
+        Ok(reco)
     }
 
     fn flip_recommandation_vote(
@@ -349,7 +385,7 @@ impl Mutation {
         reco_id: juniper::ID,
     ) -> ApiResult<Recommandation> {
         let db = ctx.0.get()?;
-        let reco_id: Uuid = reco_id.parse().map_err(|_| ApiError::IdNotFound)?;
+        let reco_id: Uuid = reco_id.parse().map_err(|_| ApiError::InvalidId)?;
         db.flip_upvote(reco_id, &user_id)?;
         Ok(db.recommandation_by_id(reco_id)?)
     }

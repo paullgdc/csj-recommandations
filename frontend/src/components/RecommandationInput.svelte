@@ -15,8 +15,6 @@
     if (reco.name.length === 0) {
       errors.push("Le nom doit etre remplie");
     }
-
-    console.log(errors, reco);
     if (errors.length > 0) {
       return;
     }
