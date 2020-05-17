@@ -2,14 +2,14 @@ import { gql } from 'apollo-boost';
 
 export const queries = {
   GET_RECOMMANDATIONS: gql`
-  query ($user: String!) {
+  query ($userId: ID!) {
     recommandations {
       id
       name
       link
       media
       upvoteCount
-      isUpvotedBy(user: $user)
+      isUpvotedBy(userId: $userId)
     }
   }
   `,
@@ -17,11 +17,11 @@ export const queries = {
 
 export const mutations = {
   FLIP_UPVOTE: gql`
-  mutation ($user: String!, $recoId: ID!) {
-    flipRecommandationVote(user: $user, id: $recoId) {
+  mutation ($userId: ID!, $recoId: ID!) {
+    flipRecommandationVote(userId: $userId, recoId: $recoId) {
       id
       upvoteCount
-      isUpvotedBy(user: $user)
+      isUpvotedBy(userId: $userId)
     }
   }
   `,

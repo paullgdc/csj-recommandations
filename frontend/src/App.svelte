@@ -14,14 +14,14 @@
 
   const recommandations = query(client, {
     query: queries.GET_RECOMMANDATIONS,
-    variables: { user }
+    variables: { userId: user }
   });
 
   function handleUpvote(reco) {
     mutate(client, {
       mutation: mutations.FLIP_UPVOTE,
       variables: {
-        user,
+        userId: user,
         recoId: reco.id
       },
       optimisticResponse: {
@@ -41,7 +41,7 @@
       update: (cache, { data: { createRecommandation } }) => {
         const { recommandations } = cache.readQuery({
           query: queries.GET_RECOMMANDATIONS,
-          variables: { user }
+          variables: { userId: user }
         });
         cache.writeQuery({
           query: queries.GET_RECOMMANDATIONS,
@@ -51,7 +51,7 @@
               { upvoteCount: 0, isUpvotedBy: false, ...createRecommandation }
             ]
           },
-          variables: { user }
+          variables: { userId: user }
         });
       }
     });
