@@ -1,5 +1,4 @@
-use anyhow::{Result, Context};
-use juniper::FieldResult;
+use anyhow::{Context, Result};
 use num_traits::cast::{FromPrimitive, ToPrimitive};
 use tokio;
 use uuid::Uuid;
@@ -7,6 +6,89 @@ use warp::Filter;
 
 use std::env;
 use std::path::PathBuf;
+
+use error::*;
+
+mod error {
+    use juniper::{graphql_value, IntoFieldError, FieldError};
+    use std::fmt;
+
+    macro_rules! from_error {
+        ($variant:ident, $error:ty) => {
+            impl From<$error> for ApiError {
+                fn from(error: $error) -> Self {
+                    eprintln!("Error: {}", error);
+                    ApiError::$variant
+                }
+            }
+        };
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum ApiError {
+        Database,
+        UnrecognizedMediaValue,
+        IdNotFound,
+    }
+
+    impl fmt::Display for ApiError {
+        fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+            use ApiError::*;
+            match self {
+                Database => write!(fmt, "Internal database error"),
+                UnrecognizedMediaValue => write!(
+                    fmt,
+                    "The media associated with this object is not recognized"
+                ),
+                IdNotFound => write!(fmt, "The id doesn't exist in database"),
+            }
+        }
+    }
+
+    from_error!(Database, r2d2::Error);
+    from_error!(Database, rusqlite::Error);
+
+    impl IntoFieldError for ApiError {
+        fn into_field_error(self) -> FieldError {
+            use ApiError::*;
+            match self {
+                Database => FieldError::new(
+                    self,
+                    graphql_value!({
+                        "type": "DATABASE"
+                    }),
+                ),
+                UnrecognizedMediaValue => FieldError::new(
+                    self,
+                    graphql_value!({
+                        "type": "UNRECOGNIZED_MEDIA_VALUE"
+                    }),
+                ),
+                IdNotFound => FieldError::new(
+                    self,
+                    graphql_value!({
+                        "type": "ID_NOT_FOUND"
+                    }),
+                ),
+            }
+        }
+    }
+
+    pub trait IntoApiResult<T> {
+        fn into_api(self) -> ApiResult<T>;
+    }
+
+    pub type ApiResult<T> = std::result::Result<T, ApiError>;
+
+    impl<T, E> IntoApiResult<T> for std::result::Result<T, E>
+    where
+        E: Into<ApiError>,
+    {
+        fn into_api(self) -> ApiResult<T> {
+            self.map_err(|e| e.into())
+        }
+    }
+}
 
 struct Config {
     static_dir: PathBuf,
@@ -75,7 +157,7 @@ impl Database {
         Ok(())
     }
 
-    fn all_recommandations(&self) -> Result<Vec<Recommandation>> {
+    fn all_recommandations(&self) -> rusqlite::Result<Vec<Recommandation>> {
         self.conn
             .prepare("SELECT id, name, media, link FROM recommandations")?
             .query_map(rusqlite::NO_PARAMS, row_to_rec)?
@@ -83,7 +165,7 @@ impl Database {
             .collect()
     }
 
-    fn create_recommandation(&self, new_reco: &Recommandation) -> Result<()> {
+    fn create_recommandation(&self, new_reco: &Recommandation) -> rusqlite::Result<()> {
         self.conn
             .prepare(
                 "INSERT INTO recommandations(id, name, media, link)
@@ -98,7 +180,7 @@ impl Database {
         Ok(())
     }
 
-    fn upvotes_by_recommandation_id(&self, reco_id: Uuid) -> Result<Vec<String>> {
+    fn upvotes_by_recommandation_id(&self, reco_id: Uuid) -> rusqlite::Result<Vec<String>> {
         self.conn
             .prepare("SELECT user_id FROM upvotes WHERE reco_id=?1 AND vote=1")?
             .query_map(rusqlite::params![&reco_id], |row| row.get("user_id"))?
@@ -106,21 +188,23 @@ impl Database {
             .collect()
     }
 
-    fn upvote_by_id(&self, reco_id: Uuid, user_id: &str) -> Result<i32> {
+    fn upvote_by_id(&self, reco_id: Uuid, user_id: &str) -> rusqlite::Result<i32> {
         Ok(self
             .conn
-            .prepare("SELECT IFNULL((SELECT vote FROM upvotes WHERE user_id=?1 AND reco_id=?2), 0) vote")?
+            .prepare(
+                "SELECT IFNULL((SELECT vote FROM upvotes WHERE user_id=?1 AND reco_id=?2), 0) vote",
+            )?
             .query_row(rusqlite::params![&user_id, &reco_id], |row| row.get("vote"))?)
     }
 
-    fn recommandation_by_id(&self, reco_id: Uuid) -> Result<Recommandation> {
+    fn recommandation_by_id(&self, reco_id: Uuid) -> rusqlite::Result<Recommandation> {
         Ok(self
             .conn
             .prepare("SELECT id, name, media, link FROM recommandations WHERE id=?1")?
             .query_row(rusqlite::params![&reco_id], row_to_rec)?)
     }
 
-    fn flip_upvote(&self, reco_id: Uuid, user_id: &str) -> Result<()> {
+    fn flip_upvote(&self, reco_id: Uuid, user_id: &str) -> rusqlite::Result<()> {
         self.conn
             .prepare(
                 "INSERT OR REPLACE INTO upvotes(user_id, reco_id, vote)
@@ -203,21 +287,20 @@ impl Recommandation {
         &self.name
     }
 
-    fn upvotes(&self, ctx: &Ctx) -> FieldResult<Vec<String>> {
+    fn upvotes(&self, ctx: &Ctx) -> ApiResult<Vec<String>> {
         Ok(ctx.0.get()?.upvotes_by_recommandation_id(self.id)?)
     }
 
-    fn upvote_count(&self, ctx: &Ctx) -> FieldResult<i32> {
+    fn upvote_count(&self, ctx: &Ctx) -> ApiResult<i32> {
         Ok(ctx.0.get()?.upvotes_by_recommandation_id(self.id)?.len() as i32)
     }
 
-    fn is_upvoted_by(&self, ctx: &Ctx, user_id: juniper::ID) -> FieldResult<bool> {
+    fn is_upvoted_by(&self, ctx: &Ctx, user_id: juniper::ID) -> ApiResult<bool> {
         Ok(ctx.0.get()?.upvote_by_id(self.id, &user_id)? == 1)
     }
 
-    fn media(&self) -> FieldResult<Media> {
-        Media::from_u8(self.media)
-            .ok_or(anyhow::anyhow!("Cannot get media variant from value").into())
+    fn media(&self) -> ApiResult<Media> {
+        Media::from_u8(self.media).ok_or(ApiError::UnrecognizedMediaValue)
     }
     fn link(&self) -> &Option<String> {
         &self.link
@@ -239,7 +322,7 @@ impl Query {
         "1.0"
     }
 
-    fn recommandations(ctx: &Ctx) -> FieldResult<Vec<Recommandation>> {
+    fn recommandations(ctx: &Ctx) -> ApiResult<Vec<Recommandation>> {
         Ok(ctx.0.get()?.all_recommandations()?)
     }
 }
@@ -248,7 +331,7 @@ struct Mutation;
 
 #[juniper::graphql_object(Context = Ctx)]
 impl Mutation {
-    fn create_recommandation(ctx: &Ctx, new: NewRecommandation) -> FieldResult<Recommandation> {
+    fn create_recommandation(ctx: &Ctx, new: NewRecommandation) -> ApiResult<Recommandation> {
         let db = ctx.0.get()?;
         let new_todo = Recommandation {
             id: db.new_id(),
@@ -264,9 +347,9 @@ impl Mutation {
         ctx: &Ctx,
         user_id: juniper::ID,
         reco_id: juniper::ID,
-    ) -> FieldResult<Recommandation> {
+    ) -> ApiResult<Recommandation> {
         let db = ctx.0.get()?;
-        let reco_id: Uuid = reco_id.parse()?;
+        let reco_id: Uuid = reco_id.parse().map_err(|_| ApiError::IdNotFound)?;
         db.flip_upvote(reco_id, &user_id)?;
         Ok(db.recommandation_by_id(reco_id)?)
     }
@@ -286,7 +369,9 @@ async fn main() -> Result<()> {
         path: config.database,
     };
     let pool = DbPool::new(manager)?;
-    pool.get()?.init().context("Wasn't able to initialize the database")?;
+    pool.get()?
+        .init()
+        .context("Wasn't able to initialize the database")?;
 
     let ctx = Ctx(pool);
 
