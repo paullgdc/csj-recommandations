@@ -5,7 +5,7 @@ use uuid::Uuid;
 use warp::Filter;
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod errors;
 pub(crate) use errors::*;
@@ -39,6 +39,57 @@ fn config() -> Result<Config> {
     })
 }
 
+fn auth_handler(
+    session_store: sessions::SessionsStore,
+) -> impl warp::Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path("auth")
+        .and(warp::post())
+        .and(
+            auth_endpoint(session_store).recover(|err: warp::Rejection| async move {
+                if let Some(auth::AuthError) = err.find() {
+                    return Ok(warp::http::Response::builder()
+                        .status(warp::http::StatusCode::UNAUTHORIZED)
+                        .body("Error during authentification")
+                        .unwrap());
+                }
+                Err(err)
+            }),
+        )
+}
+
+fn graphql_handler(
+    session_store: sessions::SessionsStore,
+    db_pool: DbPool,
+) -> impl warp::Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    let state = warp::any()
+        .and(auth_middleware(session_store.clone()))
+        .map(move |session| Ctx(db_pool.clone(), session));
+    let graphql_filter = juniper_warp::make_graphql_filter_sync(schema(), state.boxed());
+
+    warp::path("graphql").and(graphql_filter.recover(|err: warp::Rejection| async move {
+        if let Some(auth::AuthError) = err.find() {
+            return Ok(warp::http::Response::builder()
+                .status(warp::http::StatusCode::UNAUTHORIZED)
+                .body("Wrong token")
+                .unwrap());
+        }
+        Err(err)
+    }))
+}
+
+fn static_file_handler(
+    static_dir: &Path,
+) -> impl warp::Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::get().and(
+        warp::fs::dir(static_dir.to_owned())
+            .or(warp::fs::file({
+                let mut dir = static_dir.to_owned();
+                dir.push("index.html");
+                dir
+            })),
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct Ctx(DbPool, sessions::Session);
 
@@ -56,11 +107,11 @@ impl Query {
         Ok(ctx.0.get()?.all_recommandations()?)
     }
 
-    fn me(ctx: &Ctx, id: juniper::ID) -> ApiResult<User> {
+    fn me(ctx: &Ctx) -> ApiResult<User> {
         Ok(ctx
             .0
             .get()?
-            .user_by_id(id.parse().map_err(|_| ApiError::InvalidId)?)
+            .user_by_id(ctx.1.user_id)
             .transpose()
             .ok_or(ApiError::NoUserFound)??)
     }
@@ -126,37 +177,11 @@ async fn main() -> Result<()> {
 
     let session_store = sessions::SessionsStore::new();
 
-    let state = warp::any()
-        .and(auth_middleware(session_store.clone()))
-        .map(move |session| Ctx(pool.clone(), session));
-    let graphql_filter = juniper_warp::make_graphql_filter_sync(schema(), state.boxed());
-
     println!("starting the server at http://{}", config.address);
     warp::serve(
-        warp::path("graphql")
-            .and(graphql_filter.recover(|_err| async move {
-                Ok::<_, warp::Rejection>(warp::reply::with_status(
-                    warp::reply(),
-                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ))
-            }))
-            .or(warp::path("auth")
-                .and(warp::post())
-                .and(auth_endpoint(session_store))
-                .recover(|_err| async move {
-                    Ok::<_, warp::Rejection>(warp::reply::with_status(
-                        warp::reply(),
-                        warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    ))
-                }))
-            .or(warp::get()
-                .and(warp::path("graphiql").and(juniper_warp::graphiql_filter("/graphql")))
-                .or(warp::fs::dir(config.static_dir.clone()))
-                .or(warp::fs::file({
-                    let mut dir = config.static_dir.clone();
-                    dir.push("index.html");
-                    dir
-                }))),
+        graphql_handler(session_store.clone(), pool)
+            .or(auth_handler(session_store))
+            .or(static_file_handler(&config.static_dir)),
     )
     .run(config.address)
     .await;

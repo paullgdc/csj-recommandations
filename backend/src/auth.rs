@@ -42,7 +42,7 @@ pub mod sessions {
 }
 
 #[derive(Debug)]
-struct AuthError();
+pub struct AuthError;
 
 impl warp::reject::Reject for AuthError {}
 
@@ -55,7 +55,7 @@ pub fn auth_middleware(
             if let Some(session) = (&store).get_session(&header) {
                 return Ok(session);
             }
-            return Err(warp::reject::custom(AuthError()));
+            return Err(warp::reject::custom(AuthError));
         }
     })
 }
@@ -69,10 +69,10 @@ pub fn auth_endpoint(
         .and_then(move |uuid: warp::hyper::body::Bytes| {
             let mut store = store.clone();
             async move {
-                let uuid =
-                    Uuid::parse_str(str::from_utf8(&uuid).unwrap()).map_err(|_| warp::reject())?;
+                let uuid = Uuid::parse_str(str::from_utf8(&uuid).unwrap())
+                    .map_err(|_| warp::reject::custom(AuthError))?;
                 let session = sessions::Session {
-                    user_id : uuid,
+                    user_id: uuid,
                     permission: "Default".to_owned(),
                 };
 

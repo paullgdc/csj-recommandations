@@ -130,6 +130,13 @@ impl Database {
         Ok(())
     }
 
+    pub fn insert_user(&self, user: &User) -> rusqlite::Result<()> {
+        self.conn
+            .prepare("INSERT INTO users(id, username) VALUES(?1, ?2)")?
+            .execute(rusqlite::params![&user.id, &user.name])?;
+        Ok(())
+    }
+
     pub fn user_by_id(&self, id: Uuid) -> rusqlite::Result<Option<User>> {
         self.conn
             .prepare("SELECT id, username FROM users WHERE id=?1")?
